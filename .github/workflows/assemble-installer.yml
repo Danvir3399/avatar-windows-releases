@@ -18,6 +18,11 @@ on:
         description: Number of transfer parts
         required: true
         type: string
+      full:
+        description: Assemble the full first-install setup
+        required: false
+        default: false
+        type: boolean
 permissions:
   contents: write
 jobs:
@@ -29,6 +34,7 @@ jobs:
       TAG: ${{ inputs.tag }}
       EXPECTED_SHA256: ${{ inputs.sha256 }}
       EXPECTED_BYTES: ${{ inputs.bytes }}
+      FULL_SETUP: ${{ inputs.full }}
       PART_COUNT: ${{ inputs.parts }}
     steps:
       - name: Validate draft and download transfer parts
@@ -40,7 +46,11 @@ jobs:
           [[ "$EXPECTED_BYTES" =~ ^[0-9]+$ ]]
           [[ "$PART_COUNT" =~ ^[0-9]+$ ]]
           [[ "$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft)" == true ]]
-          INSTALLER="Avatar-Setup-${TAG#v}-x64.exe"
+          if [[ "$FULL_SETUP" == true ]]; then
+            INSTALLER="VARYA-AVVA-Full-Setup-${TAG#v}-x64.exe"
+          else
+            INSTALLER="Avatar-Setup-${TAG#v}-x64.exe"
+          fi
           gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --pattern "$INSTALLER.transfer.part*" --dir transfer
       - name: Assemble and verify installer
         shell: bash
@@ -48,7 +58,7 @@ jobs:
           set -euo pipefail
           python3 - <<'PY'
           import hashlib, os, pathlib
-          name = 'Avatar-Setup-' + os.environ['TAG'][1:] + '-x64.exe'
+          name = ('VARYA-AVVA-Full-Setup-' if os.environ['FULL_SETUP'] == 'true' else 'Avatar-Setup-') + os.environ['TAG'][1:] + '-x64.exe'
           count, size = int(os.environ['PART_COUNT']), int(os.environ['EXPECTED_BYTES'])
           if not 1 <= count <= 99 or not 0 < size < 2 * 1024 ** 3:
               raise SystemExit('Invalid transfer size')
@@ -72,7 +82,11 @@ jobs:
         run: |
           set -euo pipefail
           [[ "$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft)" == true ]]
-          INSTALLER="Avatar-Setup-${TAG#v}-x64.exe"
+          if [[ "$FULL_SETUP" == true ]]; then
+            INSTALLER="VARYA-AVVA-Full-Setup-${TAG#v}-x64.exe"
+          else
+            INSTALLER="Avatar-Setup-${TAG#v}-x64.exe"
+          fi
           gh release upload "$TAG" "$INSTALLER" --repo "$GITHUB_REPOSITORY" --clobber
           for part in transfer/*; do
             gh release delete-asset "$TAG" "$(basename "$part")" --repo "$GITHUB_REPOSITORY" --yes

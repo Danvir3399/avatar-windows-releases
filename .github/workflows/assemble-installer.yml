@@ -1,0 +1,79 @@
+name: Assemble release installer
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Draft release tag
+        required: true
+        type: string
+      sha256:
+        description: Expected installer SHA-256
+        required: true
+        type: string
+      bytes:
+        description: Expected installer size
+        required: true
+        type: string
+      parts:
+        description: Number of transfer parts
+        required: true
+        type: string
+permissions:
+  contents: write
+jobs:
+  assemble:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      GH_TOKEN: ${{ github.token }}
+      TAG: ${{ inputs.tag }}
+      EXPECTED_SHA256: ${{ inputs.sha256 }}
+      EXPECTED_BYTES: ${{ inputs.bytes }}
+      PART_COUNT: ${{ inputs.parts }}
+    steps:
+      - name: Validate draft and download transfer parts
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          [[ "$EXPECTED_SHA256" =~ ^[0-9a-f]{64}$ ]]
+          [[ "$EXPECTED_BYTES" =~ ^[0-9]+$ ]]
+          [[ "$PART_COUNT" =~ ^[0-9]+$ ]]
+          [[ "$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft)" == true ]]
+          INSTALLER="Avatar-Setup-${TAG#v}-x64.exe"
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --pattern "$INSTALLER.transfer.part*" --dir transfer
+      - name: Assemble and verify installer
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import hashlib, os, pathlib
+          name = 'Avatar-Setup-' + os.environ['TAG'][1:] + '-x64.exe'
+          count, size = int(os.environ['PART_COUNT']), int(os.environ['EXPECTED_BYTES'])
+          if not 1 <= count <= 99 or not 0 < size < 2 * 1024 ** 3:
+              raise SystemExit('Invalid transfer size')
+          files = sorted(pathlib.Path('transfer').glob(name + '.transfer.part*'))
+          if [p.name for p in files] != [name + '.transfer.part%02d' % i for i in range(1, count + 1)]:
+              raise SystemExit('Transfer parts are incomplete')
+          digest, written = hashlib.sha256(), 0
+          with open(name, 'xb') as output:
+              for path in files:
+                  with path.open('rb') as source:
+                      while data := source.read(1024 * 1024):
+                          output.write(data)
+                          digest.update(data)
+                          written += len(data)
+          if written != size or digest.hexdigest() != os.environ['EXPECTED_SHA256']:
+              raise SystemExit('Installer integrity mismatch')
+          print('Verified installer:', name, written, digest.hexdigest())
+          PY
+      - name: Upload verified installer and remove transfer parts
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft)" == true ]]
+          INSTALLER="Avatar-Setup-${TAG#v}-x64.exe"
+          gh release upload "$TAG" "$INSTALLER" --repo "$GITHUB_REPOSITORY" --clobber
+          for part in transfer/*; do
+            gh release delete-asset "$TAG" "$(basename "$part")" --repo "$GITHUB_REPOSITORY" --yes
+          done
